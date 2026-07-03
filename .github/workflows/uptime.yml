@@ -1,0 +1,55 @@
+name: uptime
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency: uptime
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe endpoints
+        run: node check.mjs
+
+      - name: Open incident issue on DOWN
+        if: hashFiles('.transition-down') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SVC=$(cat .transition-down)
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "🔴 DOWN: $SVC" \
+            --label incident \
+            --body "External checks from GitHub Actions report **$SVC** failing as of $(date -u +'%Y-%m-%d %H:%M UTC'). See https://docforage.com and the status page."
+
+      - name: Close incident issues on recovery
+        if: hashFiles('.transition-up') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SVC=$(cat .transition-up)
+          for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --label incident --state open --json number --jq '.[].number'); do
+            gh issue close "$n" --repo "$GITHUB_REPOSITORY" \
+              --comment "Recovered: $SVC back up as of $(date -u +'%Y-%m-%d %H:%M UTC')."
+          done
+
+      - name: Commit updated status
+        run: |
+          rm -f .transition-down .transition-up
+          if ! git diff --quiet; then
+            git config user.name "docforage-status"
+            git config user.email "actions@github.com"
+            git add -A
+            git commit -m "status: $(date -u +'%Y-%m-%d %H:%M')"
+            git push
+          fi
